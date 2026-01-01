@@ -4,51 +4,51 @@ import tensorflow as tf
 import keras
 from collections import deque
 import random
-import matplotlib as plt
 import os
-
 
 visited_positions = {}
 
-SAVE_DIR = "saved_models"
+target_pos = [5, 2]
+ai_pos = [0, 0]
+
+TOTAL_EPOCHS = 50           # сколько всего эпох хотим
+EPISODES_PER_EPOCH = 50     # сколько эпизодов в одной эпохе
+MAX_STEPS_PER_EPISODE = 100 # ограничение шагов в одном эпизоде (защита от зацикливания)
+
+STATE_SIZE = 2     # 2D позиция (x, y)
+ACTION_SIZE = 4    # назад / вперёд / вверх / вниз
+GAMMA = 0.95       # важность будущей награды
+LR = 0.0005        # насколько быстро нейросеть меняет веса
+
+GOAL = 10 
+
+epsilon = 1.0           # шанс на рандомные движения нейросети (с временем стаёт меньше)
+epsilon_min = 0.00      # минимальное значение epsilon
+epsilon_decay = 0.9992  # скорость изменения epsilon
+
+FitModel = False # если уже обученая модель загружена то нужно её дообучивать? 
+
+SAVE_DIR = "saved_models" # папка куда сохраняются модели
+MODEL_NAME = "Walking_qq" # название модели
+CHECKPOINT_EVERY = 5      # каждые сколько эпох сохранять модель?
+
+
+# просто обьявляем модель
+model = None 
+target_model = None
+
+
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-MODEL_NAME = "Walking_qq"
-CHECKPOINT_EVERY = 5   # сохранять каждые N эпох
-
-
-import os
-
-import os
-from keras import saving  # или from keras.saving import save_model, save_weights
-
-
-# Рекомендуемые пути и имена файлов
-SAVE_DIR = "saved_models"
-MODEL_NAME = "Walking_qq"
-CHECKPOINT_EVERY = 5
-
-
-def save_agent(epoch, model, target_model=None):
-    """
-    Сохраняет модель после завершения указанной эпохи
-    """
+def save_agent(epoch, model, target_model=None): # сохраняем модель
     epoch_str = f"{epoch:04d}"
     base_name = f"{MODEL_NAME}_epoch_{epoch_str}"
     
-    # Полный путь к файлу
     full_path = os.path.join(SAVE_DIR, f"{base_name}.keras")
     
-    # Сохраняем полную модель (рекомендуемый способ)
     keras.saving.save_model(model, full_path)
     print(f"Сохранена полная модель: {full_path}")
     
-    # Опционально: только веса (компактнее, но требует архитектуру при загрузке)
-    # weights_path = os.path.join(SAVE_DIR, f"{base_name}_weights.h5")
-    # keras.saving.save_weights(model, weights_path)
-    # print(f"Сохранены только веса: {weights_path}")
-    
-    # Состояние обучения (очень полезно!)
     state_path = os.path.join(SAVE_DIR, f"{base_name}_state.txt")
     with open(state_path, "w", encoding="utf-8") as f:
         f.write(f"epoch={epoch}\n")
@@ -58,7 +58,7 @@ def save_agent(epoch, model, target_model=None):
     print(f"Состояние обучения сохранено: {state_path}")
 
 def load_last_model():
-    """Пытается загрузить самую последнюю сохранённую модель .keras"""
+    """пробуем загрузить самую последнюю сохранённую модель .keras"""
     global model, target_model, epsilon, step_count
     
     # Ищем все .keras файлы, которые начинаются с MODEL_NAME
@@ -114,12 +114,11 @@ def step(state, action):
     # ограничения
     state[0] = max(0, min(GOAL, state[0]))
     state[1] = max(0, min(GOAL, state[1]))
-    # проверка завершения эпизода
+
     done = (state[0] == target_pos[0] and state[1] == target_pos[1])
     # награда: чем ближе к цели, тем больше
     distance = abs(target_pos[0] - state[0]) + abs(target_pos[1] - state[1])
     reward = max(0, GOAL*2 - distance)  # награда растет при уменьшении distance
-    # если достиг цели, награда удваивается
     if done:
         reward *= 2
     return state, reward, done
@@ -129,11 +128,10 @@ def pos_to_pix(pos):
     return (pos * 50)
 
 
-# Внутри train_step меняем choose_action на:
 def choose_action(state):
     global epsilon
     
-    state_array = numpy.array(state)           # ← вот это главное
+    state_array = numpy.array(state)  
     
     if numpy.random.rand() < epsilon:
         action = numpy.random.randint(0, 4)
@@ -163,7 +161,6 @@ def train_step(state):
         next_states = numpy.array([t[3] for t in minibatch])
         dones = numpy.array([t[4] for t in minibatch])
         
-        # Double DQN вариант (ещё стабильнее)
         q_next = model.predict(next_states, verbose=0)
         q_target_next = target_model.predict(next_states, verbose=0)
         
@@ -172,7 +169,9 @@ def train_step(state):
         target_f = model.predict(states, verbose=0)
         target_f[numpy.arange(BATCH_SIZE), actions] = targets
         
-        model.fit(states, target_f, epochs=1, verbose=0)
+        if loaded == False & FitModel == True:
+            model.fit(states, target_f, epochs=1, verbose=0)
+        
     
     step_count += 1
     if step_count % TARGET_UPDATE_FREQ == 0:
@@ -212,36 +211,10 @@ TARGET_UPDATE_FREQ = 1000
 current_epoch = 0
 memory = deque(maxlen=MEMORY_SIZE)
 
-target_pos = [5, 2]
-ai_pos = [0, 0]
 
-TOTAL_EPOCHS = 50           # сколько всего эпох хотим
-EPISODES_PER_EPOCH = 50     # сколько эпизодов в одной эпохе
-MAX_STEPS_PER_EPISODE = 100 # ограничение шагов в одном эпизоде (защита от зацикливания)
-
-
-STATE_SIZE = 2     # позиция
-ACTION_SIZE = 4    # назад / вперёд
-GOAL = 10
-GAMMA = 0.95       # важность будущей награды
-LR = 0.01
-# STATE_SIZE	сколько чисел описывает состояние
-# ACTION_SIZE	сколько вариантов действий
-# GAMMA	"насколько я думаю о будущем"
-# LR	насколько быстро нейросеть меняет веса
-
-# Добавляем эти переменные
-epsilon = 0
-epsilon_min = 0.00
-epsilon_decay = 0.9992     # довольно плавное затухание
-
-model = None
-target_model = None
-
-# В начале программы, после всех определений функций
 
 print("Попытка загрузки последней модели...")
-loaded = load_last_model()  # ← просто вызываем, НЕ присваиваем model = ...
+loaded = load_last_model()
 
 if loaded:
     print("Модель успешно загружена и готова к использованию\n")
@@ -269,7 +242,7 @@ while current_epoch < TOTAL_EPOCHS and not running:
     print(f"\n=== epoch {current_epoch + 1}/{TOTAL_EPOCHS} ===")
     
     while current_episode < EPISODES_PER_EPOCH and not running:
-        # reset episode status
+        # ресетаем статус эпизода
         ai_pos = [0, 0]
         steps_in_episode = 0
         episode_done = False
@@ -292,14 +265,14 @@ while current_epoch < TOTAL_EPOCHS and not running:
                         f"шагов: {steps_in_episode:4d}  "
                         f"ε: {epsilon:.3f}")
 
-            # отрисовка
+            # рендер
             screen.fill((0, 0, 0))
             screen.blit(AIcharacter, (pos_to_pix(ai_pos[0]), pos_to_pix(ai_pos[1])))
             screen.blit(targetImage, (pos_to_pix(target_pos[0]), pos_to_pix(target_pos[1])))
             pygame.display.flip()
             clock.tick(100)
 
-        # если вышли по максимальному количеству шагов — тоже считаем эпизод завершённым
+        # если максимум шагов достигнут то заканчиваем эпизод
         if not episode_done:
             current_episode += 1
             print(f"episode {current_episode:3d}/{EPISODES_PER_EPOCH}  "
@@ -307,5 +280,5 @@ while current_epoch < TOTAL_EPOCHS and not running:
     
     # конец эпохи
     current_epoch += 1
-    if (current_epoch + 1) % 2 == 0:
+    if (current_epoch + 1) % CHECKPOINT_EVERY == 0 & FitModel == True:
         save_agent(current_epoch, model, target_model)
