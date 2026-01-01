@@ -17,56 +17,87 @@ MODEL_NAME = "Walking_qq"
 CHECKPOINT_EVERY = 5   # сохранять каждые N эпох
 
 
-def save_agent(epoch):
-    path = os.path.join(SAVE_DIR, f"{MODEL_NAME}_epoch_{epoch:04d}")
+import os
+
+import os
+from keras import saving  # или from keras.saving import save_model, save_weights
+
+
+# Рекомендуемые пути и имена файлов
+SAVE_DIR = "saved_models"
+MODEL_NAME = "Walking_qq"
+CHECKPOINT_EVERY = 5
+
+
+def save_agent(epoch, model, target_model=None):
+    """
+    Сохраняет модель после завершения указанной эпохи
+    """
+    epoch_str = f"{epoch:04d}"
+    base_name = f"{MODEL_NAME}_epoch_{epoch_str}"
     
-    # Сохраняем основную модель
-    model.save(f"{path}_model.h5")
+    # Полный путь к файлу
+    full_path = os.path.join(SAVE_DIR, f"{base_name}.keras")
     
-    # Сохраняем target-модель (иногда полезно)
-    # target_model.save(f"{path}_target.h5")
+    # Сохраняем полную модель (рекомендуемый способ)
+    keras.saving.save_model(model, full_path)
+    print(f"Сохранена полная модель: {full_path}")
     
-    # Можно также сохранить epsilon, step_count и т.д.
-    with open(f"{path}_state.txt", "w") as f:
+    # Опционально: только веса (компактнее, но требует архитектуру при загрузке)
+    # weights_path = os.path.join(SAVE_DIR, f"{base_name}_weights.h5")
+    # keras.saving.save_weights(model, weights_path)
+    # print(f"Сохранены только веса: {weights_path}")
+    
+    # Состояние обучения (очень полезно!)
+    state_path = os.path.join(SAVE_DIR, f"{base_name}_state.txt")
+    with open(state_path, "w", encoding="utf-8") as f:
         f.write(f"epoch={epoch}\n")
         f.write(f"step_count={step_count}\n")
         f.write(f"epsilon={epsilon:.6f}\n")
     
-    print(f"Модель сохранена: {path}_model.h5")
+    print(f"Состояние обучения сохранено: {state_path}")
 
-
-def load_agent(try_epoch=None):
-    global model, target_model, step_count, epsilon
+def load_last_model():
+    """Пытается загрузить самую последнюю сохранённую модель .keras"""
+    global model, target_model, epsilon, step_count
     
-    if try_epoch is None:
-        # ищем самую последнюю модель
-        files = [f for f in os.listdir(SAVE_DIR) if f.endswith("_model.h5")]
-        if not files:
-            print("Сохранённых моделей не найдено, начинаем с начала")
-            return False
-        latest = max(files, key=lambda x: int(x.split("_epoch_")[1].split("_")[0]))
-        load_path = os.path.join(SAVE_DIR, latest)
-    else:
-        load_path = os.path.join(SAVE_DIR, f"{MODEL_NAME}_epoch_{try_epoch:04d}_model.h5")
-        if not os.path.exists(load_path):
-            print(f"Модель эпохи {try_epoch} не найдена")
-            return False
+    # Ищем все .keras файлы, которые начинаются с MODEL_NAME
+    model_files = [
+        f for f in os.listdir(SAVE_DIR) 
+        if f.startswith(MODEL_NAME) and f.endswith(".keras")
+    ]
     
-    print(f"Загружаем модель: {load_path}")
+    if not model_files:
+        print("Сохранённых моделей не найдено → создаём новую")
+        return False
     
-    model = tf.keras.models.load_model(load_path)
+    # Берём самую новую по номеру эпохи в имени
+    latest_file = max(model_files, key=lambda x: int(x.split("_epoch_")[1].split(".")[0]))
+    model_path = os.path.join(SAVE_DIR, latest_file)
+    
+    print(f"Нашлась модель: {model_path}")
+    print("Загружаю... ", end="")
+    
+    # Загружаем полную модель
+    model = keras.saving.load_model(model_path)
+    
+    # Создаём target-модель как копию
     target_model = keras.models.clone_model(model)
     target_model.set_weights(model.get_weights())
     
-    # Можно также загрузить epsilon и step_count из state.txt
-    state_file = load_path.replace("_model.h5", "_state.txt")
+    # Пытаемся восстановить epsilon и step_count
+    state_file = model_path.replace(".keras", "_state.txt")
     if os.path.exists(state_file):
-        with open(state_file) as f:
+        with open(state_file, encoding="utf-8") as f:
             for line in f:
+                line = line.strip()
                 if line.startswith("epsilon="):
-                    epsilon = float(line.split("=")[1])
+                    epsilon = float(line.split("=", 1)[1])
                 if line.startswith("step_count="):
-                    step_count = int(line.split("=")[1])
+                    step_count = int(line.split("=", 1)[1])
+        print(f"восстановлено! epsilon = {epsilon:.3f}, step_count = {step_count}")
+    else:
+        print("но файл состояния не найден (epsilon и step_count останутся текущими)")
     
     return True
 
@@ -154,6 +185,8 @@ def remember(state, action, reward, next_state, done):
     memory.append((state, action, reward, next_state, done))
 
 
+
+
 pygame.init()
 
 size = width,height = 600, 600
@@ -184,7 +217,7 @@ ai_pos = [0, 0]
 
 TOTAL_EPOCHS = 50           # сколько всего эпох хотим
 EPISODES_PER_EPOCH = 50     # сколько эпизодов в одной эпохе
-MAX_STEPS_PER_EPISODE = 500 # ограничение шагов в одном эпизоде (защита от зацикливания)
+MAX_STEPS_PER_EPISODE = 100 # ограничение шагов в одном эпизоде (защита от зацикливания)
 
 
 STATE_SIZE = 2     # позиция
@@ -198,28 +231,37 @@ LR = 0.01
 # LR	насколько быстро нейросеть меняет веса
 
 # Добавляем эти переменные
-epsilon = 1.0
-epsilon_min = 0.05
+epsilon = 0
+epsilon_min = 0.00
 epsilon_decay = 0.9992     # довольно плавное затухание
 
-model = tf.keras.Sequential([
-    keras.layers.Dense(24, activation="relu", input_shape=(STATE_SIZE,)),
-    keras.layers.Dense(24, activation="relu"),
-    keras.layers.Dense(ACTION_SIZE, activation="linear")
-])
+model = None
+target_model = None
 
+# В начале программы, после всех определений функций
 
-model.compile(
-    optimizer=tf.keras.optimizers.Adam(LR),
-    loss="mse"
-)
+print("Попытка загрузки последней модели...")
+loaded = load_last_model()  # ← просто вызываем, НЕ присваиваем model = ...
 
-target_model = keras.models.clone_model(model)
-target_model.set_weights(model.get_weights())
-
+if loaded:
+    print("Модель успешно загружена и готова к использованию\n")
+else:
+    print("Модель не найдена → создаём новую\n")
+    model = tf.keras.Sequential([
+        keras.layers.Dense(24, activation="relu", input_shape=(STATE_SIZE,)),
+        keras.layers.Dense(24, activation="relu"),
+        keras.layers.Dense(ACTION_SIZE, activation="linear")
+    ])
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(LR),
+        loss="mse"
+    )
+    target_model = keras.models.clone_model(model)
+    target_model.set_weights(model.get_weights())
 
 running = False
 doneCounter = 0
+
 while current_epoch < TOTAL_EPOCHS and not running:
     current_episode = 0
     epoch_steps = 0
@@ -266,8 +308,4 @@ while current_epoch < TOTAL_EPOCHS and not running:
     # конец эпохи
     current_epoch += 1
     if (current_epoch + 1) % 2 == 0:
-        target_model.save(f"model_epoch_{current_epoch+1:03d}.h5")
-        print(f"Сохранено: model_epoch_{current_epoch+1:03d}.h5")
-
-        model.save(f"model_epoch_{current_epoch+1:03d}.h5")
-        print(f"Сохранено: model_epoch_{current_epoch+1:03d}.h5")
+        save_agent(current_epoch, model, target_model)

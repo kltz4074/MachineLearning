@@ -1,1 +1,4 @@
 .h5
+.keras
+.txt
+saved_models/*
